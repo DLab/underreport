@@ -88,18 +88,14 @@ def args_parser(argv):
         elif opt in ("-n", "--ofile"):
             ngpu = arg
 
-   print( 'Computing underreporting from region number "', from_region)
-   print( 'to region number ', to_region)
    return from_region, to_region, ngpu
 
-#config = tf.compat.v1.ConfigProto(gpu_options=tf.compat.v1.GPUOptions(allow_growth=True))
-#gpflow.reset_default_session(config=config)
+
 endpointnew = requests.get('http://192.168.2.223:5006/getNewCasesAllStates')
 actives = json.loads(endpointnew.text)
 dates = pd.to_datetime(actives['dates'])
 dates = [x.strftime("%Y-%m-%d") for x in dates]
 # Parsing args
-print(sys.argv[1:])
 from_region, to_region, gpun =  args_parser(sys.argv[1:])
 
 
@@ -158,21 +154,16 @@ with tf.device('/gpu:'+gpun):
                 deaths = deaths.query("total > 0")
 
 
-            #regions = reg_active.index
             common = list(set(deaths.index.to_list()).intersection(reg_active.index.to_list()))
-            print(common)
             if len(common) <10:
                 continue
-            #reg_active = pd.pivot_table(reg_active, values='cases', index=['region', 'dates'])
             common = sorted(common)
-            #print('common', len(common))
             mu, sigma = 13, 12.7  #?
             mean = np.log(mu**2 / np.sqrt(mu**2 + sigma**2) )
             std =  np.sqrt(np.log(1 + sigma**2/mu**2)  )
             f = lognorm(s = std, scale = np.exp(mean))
             days = 15
 
-            #RM_ac = reg_active.loc[current_region]
             RM_ac = reg_active
             RM_ac = RM_ac.loc[common]
             RM_deaths = deaths['total'].loc[common]
@@ -257,34 +248,6 @@ with tf.device('/gpu:'+gpun):
             mean = special.logit(np.mean(posterior_samples, 0))
             low = np.percentile(special.logit(posterior_samples), 1, axis=0)
             high = np.percentile(special.logit(posterior_samples), 99, axis=0)
-
-            # fig = plt.figure(figsize=(16, 9))
-            # ax = fig.add_subplot(1,1,1)
-            #
-            # xx = np.linspace(1, estimator_a.shape[0], estimator_a.shape[0])[:, None]
-            # (line,) = ax.plot(xx, (1-special.logit(np.mean(posterior_samples, 0)))*100, lw=2)
-            # ax.fill_between(
-            #     xx[:, 0],
-            #     (1-np.percentile(special.logit(posterior_samples), 1, axis=0))*100,
-            #     (1-np.percentile(special.logit(posterior_samples), 99, axis=0))*100,
-            #     color=line.get_color(),
-            #     alpha=0.2,
-            # )
-            # ax.plot(xx, (1-estimator_a)*100, '.')
-            # #ax.set_ylim((0,2.2))
-            #
-            # realcommon = common[11:]
-            # ticks = [i  for i in range(len(common)-11) if i%7==0]
-            # ticks_labels = [realcommon[i].replace('-','/')  for i in range(len(common)-11) if i%7==0]
-            # ticks += [range(len(common)-11)[-1]]
-            # ticks_labels += [realcommon[-1].replace('-','/')]
-            # ax.set_xticks(ticks)
-            # plt.xticks(rotation=45)
-            # ax.set_xticklabels(ticks_labels, fontdict = {'fontsize' : '8'})
-            # plt.ylabel('% de subreporte')
-            # plt.title('Subreporte (%) a Region '+str(current_region) )
-            #
-            # fig.savefig('subreporte_'+str(current_region)+'_'+common[-1])
 
             final_data = pd.DataFrame(index = common[11:])
             final_data['mean'] = mean
