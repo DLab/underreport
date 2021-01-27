@@ -19,7 +19,6 @@ gpflow.config.set_default_summary_fmt("notebook")
 # convert to float64 for tfp to play nicely with gpflow in 64
 f64 = gpflow.utilities.to_default_float
 tf.random.set_seed(123)
-# sess = tf.compat.v1.Session(config=tf.compat.v1.ConfigProto(log_device_placement=True))
 
 
 
@@ -106,8 +105,7 @@ with tf.device('/gpu:'+gpun):
 
 
     for current_region in range(int(from_region),int(to_region)+1):
-        #DATA
-        #try:
+
             if current_region == 17:
                 endpointnew = requests.get('http://192.168.2.223:5006/getNationalNewCases')
                 actives = json.loads(endpointnew.text)
@@ -132,7 +130,6 @@ with tf.device('/gpu:'+gpun):
                     deaths2.index = [x.strftime("%Y-%m-%d") for x in deaths2.index]
                     deaths = deaths+ deaths2
                 deaths['total'] = deaths['confirmed'] +deaths['suspected']
-                # deaths['total'] = deaths['total']
                 deaths = deaths.query("total > 0")
             else:
                 padded_region = '{:02d}'.format(current_region)
@@ -149,14 +146,15 @@ with tf.device('/gpu:'+gpun):
                 deaths.drop(columns = 'dates', inplace= True)
                 deaths.index = [x.strftime("%Y-%m-%d") for x in deaths.index]
 
-                #deaths['dates'] = deaths['dates'].apply(sissor)
                 deaths['total'] = deaths['confirmed'] +deaths['suspected']
                 deaths = deaths.query("total > 0")
 
 
             common = list(set(deaths.index.to_list()).intersection(reg_active.index.to_list()))
+            # min. nummber of datapoints to compute
             if len(common) <10:
                 continue
+
             common = sorted(common)
             mu, sigma = 13, 12.7  #?
             mean = np.log(mu**2 / np.sqrt(mu**2 + sigma**2) )
@@ -169,14 +167,13 @@ with tf.device('/gpu:'+gpun):
             RM_deaths = deaths['total'].loc[common]
 
             d_cases = np.empty((RM_ac.shape[0],1))
-            for i in range(RM_ac.shape[0]):#RM_ac.shape[0]
+            for i in range(RM_ac.shape[0]):
                 until_t_data = RM_ac.values[:i+1]
                 reversed_arr = until_t_data[::-1].reshape(i+1)
                 d_cases[i] = np.sum(f.pdf(np.linspace(0,i,i+1)) * reversed_arr)
-            d_cases = d_cases[11:]
 
-            RM_deaths = RM_deaths[11:]
-            dcfr = RM_deaths.values/d_cases.reshape(len(common)-11)
+
+            dcfr = RM_deaths.values/d_cases.reshape(len(common))
             estimator_a = pd.read_csv('adjusted_cfr.csv').iloc[current_region-1]['cfr_mid']/(dcfr*100) # 1.4787
             estimator_a = estimator_a[:-1]
             common = common[:-1]
@@ -184,7 +181,7 @@ with tf.device('/gpu:'+gpun):
             pro_a = special.expit(estimator_a) #logit
             X = np.linspace(1, estimator_a.shape[0], estimator_a.shape[0])
             X = tf.convert_to_tensor(X.reshape(estimator_a.shape[0],-1), dtype=tf.float64)
-            pro_a = pro_a#*0.9
+            pro_a = pro_a
             pro_a = tf.convert_to_tensor(pro_a.reshape(estimator_a.shape[0],-1))
             data = (X, pro_a)
 
@@ -194,8 +191,6 @@ with tf.device('/gpu:'+gpun):
             optimizer = gpflow.optimizers.Scipy()
             optimizer.minimize(model.training_loss, model.trainable_variables)
 
-            #if verbose : print(f"log posterior density at optimum: {model.log_posterior_density()}")
-
             model.kernel.variance.prior  = tfd.LogNormal(f64(1.0), f64(1.0))
             model.kernel.lengthscales.prior  = tfd.LogNormal(f64(4.0), f64(0.5))
 
@@ -204,7 +199,7 @@ with tf.device('/gpu:'+gpun):
 
             num_burnin_steps = ci_niter(1000)
             num_samples = ci_niter(10000)
-            # Note that here we need model.trainable_parameters, not trainable_variables - only parameters can have priors!
+
             hmc_helper = gpflow.optimizers.SamplingHelper(
                 model.log_posterior_density, model.trainable_parameters
             )
@@ -249,7 +244,7 @@ with tf.device('/gpu:'+gpun):
             low = np.percentile(special.logit(posterior_samples), 1, axis=0)
             high = np.percentile(special.logit(posterior_samples), 99, axis=0)
 
-            final_data = pd.DataFrame(index = common[11:])
+            final_data = pd.DataFrame(index = common)
             final_data['mean'] = mean
             final_data['low'] = low
             final_data['high'] = high
