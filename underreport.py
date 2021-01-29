@@ -12,6 +12,7 @@ from gpflow import set_trainable
 import requests
 import json
 import sys, getopt
+import datetime
 
 gpflow.config.set_default_float(np.float64)
 gpflow.config.set_default_jitter(1e-4)
@@ -20,7 +21,54 @@ gpflow.config.set_default_summary_fmt("notebook")
 f64 = gpflow.utilities.to_default_float
 tf.random.set_seed(123)
 
+def number_to_date(number):
+    if isinstance(number,int):
+            number = [number]
+    if len(number) > 1:
+        date_list = []
 
+        for num in number:
+            starting_date =  datetime.date(2020, 1, 1)
+            date = starting_date + datetime.timedelta(days=num)
+            date_list.append(date.strftime("%Y-%m-%d"))
+        date = date_list
+
+    else:
+        starting_date =  datetime.date(2020, 1, 1)
+        date = starting_date + datetime.timedelta(days=number[0])
+        date = date.strftime("%Y-%m-%d")
+    return date
+
+def date_to_number(dates):
+
+    if len(dates) == 1:
+        yyyy, mm, dd = dates.split("-")
+        yyyy = int(yyyy)
+        mm = int(mm)
+        dd = int(dd)
+
+        starting_date =  datetime.date(2020, 1, 1)
+        query_date = datetime.date(yyyy, mm, dd)
+        days_passed = query_date-starting_date
+        days_passed = int(days_passed.days)
+
+    else:
+        days_list = []
+
+        for date in dates:
+            yyyy, mm, dd = date.split("-")
+            yyyy = int(yyyy)
+            mm = int(mm)
+            dd = int(dd)
+
+            starting_date =  datetime.date(2020, 1, 1)
+            query_date = datetime.date(yyyy, mm, dd)
+            days_passed = query_date-starting_date
+            days_passed = int(days_passed.days)
+            days_list.append(days_passed)
+        days_passed = days_list
+
+    return days_passed
 
 def underreport_estimate(cases, deaths):
     pass
@@ -152,7 +200,7 @@ with tf.device('/gpu:'+gpun):
 
             common = list(set(deaths.index.to_list()).intersection(reg_active.index.to_list()))
             # min. nummber of datapoints to compute
-            if len(common) <10:
+            if len(common) <30:
                 continue
 
             common = sorted(common)
@@ -174,12 +222,13 @@ with tf.device('/gpu:'+gpun):
 
 
             dcfr = RM_deaths.values/d_cases.reshape(len(common))
-            estimator_a = pd.read_csv('adjusted_cfr.csv').iloc[current_region-1]['cfr_mid']/(dcfr*100) # 1.4787
+            estimator_a = pd.read_csv('adjusted_cfr.csv').iloc[current_region-1]['cfr_mid']/(dcfr*100)
             estimator_a = estimator_a[:-1]
             common = common[:-1]
 
             pro_a = special.expit(estimator_a) #logit
-            X = np.linspace(1, estimator_a.shape[0], estimator_a.shape[0])
+            numeric_common = date_to_number(common)
+            X = np.asarray(numeric_common)
             X = tf.convert_to_tensor(X.reshape(estimator_a.shape[0],-1), dtype=tf.float64)
             pro_a = pro_a
             pro_a = tf.convert_to_tensor(pro_a.reshape(estimator_a.shape[0],-1))
@@ -227,24 +276,23 @@ with tf.device('/gpu:'+gpun):
             parameter_samples = hmc_helper.convert_to_constrained_values(samples)
 
             param_to_name = {param: name for name, param in gpflow.utilities.parameter_dict(model).items()}
-
-            xx = np.linspace(1, estimator_a.shape[0], estimator_a.shape[0])[:, None]
-            posterior_samples = []#np.empty(10000,185)
+            xx2 = np.linspace(numeric_common[0], numeric_common[-1], numeric_common[-1]-numeric_common[0]+1)[:, None]
+            posterior_samples = []
 
             for i in range(0, 10000):#num_samples
                 for var, var_samples in zip(hmc_helper.current_state, samples):
                     var.assign(var_samples[i])
-                f = model.predict_f_samples(xx, 1)
+                f = model.predict_f_samples(xx2, 1)
                 posterior_samples.append( f[0, :, :])
 
-            posterior_samples = np.hstack(posterior_samples)#, axis = 1)
+            posterior_samples = np.hstack(posterior_samples)
             posterior_samples = posterior_samples.T
 
             mean = special.logit(np.mean(posterior_samples, 0))
-            low = np.percentile(special.logit(posterior_samples), 1, axis=0)
-            high = np.percentile(special.logit(posterior_samples), 99, axis=0)
+            low = np.percentile(special.logit(posterior_samples), 0.13, axis=0)
+            high = np.percentile(special.logit(posterior_samples), 99.87, axis=0)
 
-            final_data = pd.DataFrame(index = common)
+            final_data = pd.DataFrame(index = number_to_date([i for i in range(numeric_common[0],numeric_common[-1]+1)]))
             final_data['mean'] = mean
             final_data['low'] = low
             final_data['high'] = high
