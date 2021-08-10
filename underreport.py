@@ -5,7 +5,7 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 from tensorflow_probability import distributions as tfd
 from scipy import special
-from scipy.stats import lognorm
+from scipy.stats import lognorm, norm
 import gpflow
 from gpflow.ci_utils import ci_niter
 from gpflow import set_trainable
@@ -153,7 +153,7 @@ with tf.device('/gpu:'+gpun):
 
 
     for current_region in range(int(from_region),int(to_region)+1):
-
+            ## Data loading
             if current_region == 17:
                 endpointnew = requests.get('http://192.168.2.223:5006/getNationalNewCases')
                 actives = json.loads(endpointnew.text)
@@ -204,6 +204,7 @@ with tf.device('/gpu:'+gpun):
                 continue
 
             common = sorted(common)
+            # Delay distribution
             mu, sigma = 13, 12.7  #?
             mean = np.log(mu**2 / np.sqrt(mu**2 + sigma**2) )
             std =  np.sqrt(np.log(1 + sigma**2/mu**2)  )
@@ -214,19 +215,28 @@ with tf.device('/gpu:'+gpun):
             RM_ac = RM_ac.loc[common]
             RM_deaths = deaths['total'].loc[common]
 
+            ## Cases known convolution
             d_cases = np.empty((RM_ac.shape[0],1))
             for i in range(RM_ac.shape[0]):
                 until_t_data = RM_ac.values[:i+1]
                 reversed_arr = until_t_data[::-1].reshape(i+1)
                 d_cases[i] = np.sum(f.pdf(np.linspace(0,i,i+1)) * reversed_arr)
 
-
             dcfr = RM_deaths.values/d_cases.reshape(len(common))
+
+            ## scale cfr temporal
             estimator_a = pd.read_csv('adjusted_cfr.csv').iloc[current_region-1]['cfr_mid']/(dcfr*100)
+            estimator_a = np.where(estimator_a<1, estimator_a, 0.99999)
+            estimator_a = np.where(estimator_a>0, estimator_a, 10**-5)
             estimator_a = estimator_a[:-1]
             common = common[:-1]
 
-            pro_a = special.expit(estimator_a) #logit
+            ## Contrary to the original paper we apply the probit function to the estimator
+            ## instead of applying the inverse to the GP output and then passing the expected
+            ## number of deaths with a stochastic baseline cfr.
+            ## Because of the aforementioned the propagation of the baseline cfr error is lost
+            ## for the moment.
+            pro_a = norm.ppf(estimator_a)
             numeric_common = date_to_number(common)
             X = np.asarray(numeric_common)
             X = tf.convert_to_tensor(X.reshape(estimator_a.shape[0],-1), dtype=tf.float64)
@@ -234,17 +244,19 @@ with tf.device('/gpu:'+gpun):
             pro_a = tf.convert_to_tensor(pro_a.reshape(estimator_a.shape[0],-1))
             data = (X, pro_a)
 
-            kernel = gpflow.kernels.SquaredExponential()
-            mean_function = gpflow.mean_functions.Constant(f64(0.5))#c=1 , mean_function
-            model = gpflow.models.GPR(data, kernel, mean_function = mean_function, noise_variance=0.01)
+            # Setting GP model
+            kernel = gpflow.kernels.SquaredExponential()+gpflow.kernels.Constant(variance=1.0)
+            model = gpflow.models.GPR(data, kernel)
+            set_trainable(model.kernel.kernels[1].variance, False)
+
             optimizer = gpflow.optimizers.Scipy()
             optimizer.minimize(model.training_loss, model.trainable_variables)
 
-            model.kernel.variance.prior  = tfd.LogNormal(f64(1.0), f64(1.0))
-            model.kernel.lengthscales.prior  = tfd.LogNormal(f64(4.0), f64(0.5))
+            # Prior here are for the variance, contrary to the original paper
+            model.kernel.kernels[0].variance.prior  = tfd.LogNormal(f64(1.0), f64(1.0))
+            model.kernel.kernels[0].lengthscales.prior  = tfd.LogNormal(f64(4.0), f64(0.5))
 
             model.likelihood.variance.prior  = tfd.HalfNormal( f64(0.5))
-            model.mean_function.c.prior  = tfd.Uniform(f64(0.0), f64(1.0))
 
             num_burnin_steps = ci_niter(1000)
             num_samples = ci_niter(10000)
@@ -271,7 +283,7 @@ with tf.device('/gpu:'+gpun):
                     trace_fn=lambda _, pkr: pkr.inner_results.is_accepted,
                 )
 
-
+            # Sampling hyperparameters
             samples, traces = run_chain_fn()
             parameter_samples = hmc_helper.convert_to_constrained_values(samples)
 
@@ -279,8 +291,9 @@ with tf.device('/gpu:'+gpun):
             xx2 = np.linspace(numeric_common[0], numeric_common[-1], numeric_common[-1]-numeric_common[0]+1)[:, None]
             posterior_samples = []
 
+            #Sampling output
             for i in range(0, 10000):#num_samples
-                for var, var_samples in zip(hmc_helper.current_state, samples):
+                for var, var_samples in zip(hmc_helper.current_state, parameter_samples):
                     var.assign(var_samples[i])
                 f = model.predict_f_samples(xx2, 1)
                 posterior_samples.append( f[0, :, :])
@@ -288,12 +301,15 @@ with tf.device('/gpu:'+gpun):
             posterior_samples = np.hstack(posterior_samples)
             posterior_samples = posterior_samples.T
 
-            mean = special.logit(np.mean(posterior_samples, 0))
-            low = np.percentile(special.logit(posterior_samples), 0.13, axis=0)
-            high = np.percentile(special.logit(posterior_samples), 99.87, axis=0)
+            # Intervals
+            reporting = norm.cdf(posterior_samples)
+
+            rep_mean = np.mean(reporting, 0)
+            rep_low = np.percentile(reporting, 0.13, axis=0)
+            rep_high = np.percentile(reporting, 99.87, axis=0)
 
             final_data = pd.DataFrame(index = number_to_date([i for i in range(numeric_common[0],numeric_common[-1]+1)]))
-            final_data['mean'] =1- mean
-            final_data['low'] = 1-low
-            final_data['high'] = 1-high
+            final_data['mean'] = 1 - mean
+            final_data['low'] = 1 - high
+            final_data['high'] = 1 - low
             final_data.to_csv('output/'+str(current_region)+'.csv')
