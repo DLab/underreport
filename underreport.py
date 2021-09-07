@@ -309,7 +309,7 @@ with tf.device('/gpu:'+gpun):
             rep_high = np.percentile(reporting, 99.87, axis=0)
 
             final_data = pd.DataFrame(index = number_to_date([i for i in range(numeric_common[0],numeric_common[-1]+1)]))
-            final_data['mean'] = 1 - mean
-            final_data['low'] = 1 - high
-            final_data['high'] = 1 - low
+            final_data['mean'] = 1 - rep_mean
+            final_data['low'] = 1 - rep_high
+            final_data['high'] = 1 - rep_low
             final_data.to_csv('output/'+str(current_region)+'.csv')
